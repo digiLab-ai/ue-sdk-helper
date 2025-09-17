@@ -3,3 +3,9 @@ __pycache__/
 .pytest_cache/
 DS_Store/
 poetry.lock
+.venv/
+*.pyc
+dist/
+build/
+*.egg-info/
+.ipynb_checkpoints/
