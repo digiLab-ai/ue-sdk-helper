@@ -1,0 +1,26 @@
+[tool.poetry]
+name = "new-project"
+version = "0.1.0"
+description = "New Project"
+authors = ["Projects Team <projects@digilab.ai>"]
+readme = "README.md"
+package-mode = false  # Comment to enable package mode
+# packages = [
+#     { include = "my_package", from = "src" },  # Include a package from src directory
+#     { include = "extra_package/**/*.py" },
+# ]  # To include extra packages outside the named package directory
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.13"
+
+[tool.poetry.group.dev.dependencies]
+black = "^25.1.0"
+devtools = "^0.12.2"
+ipykernel = "^6.28.0"
+matplotlib = "^3.8.2"
+pytest = "^8.4.0"
+python-dotenv = "^1.0.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
