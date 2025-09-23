@@ -1,24 +1,26 @@
+[build-system]
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"
+
 [tool.poetry]
-name = "uncertainty-engine-helper"
+name = "ue-helper"
 version = "0.0.1"
 description = "Utility helpers for the Uncertainty Engine ecosystem."
 authors = ["Daniel Greenhouse <dan.greenhouse@digilab.ai>"]
 readme = "README.md"
+packages = [{ include = "ue_helper", from = "src" }]
+
+[tool.poetry.urls]
+Homepage = "https://github.com/digiLab-ai/ue-sdk-helper"
 
 [tool.poetry.dependencies]
 python = ">=3.9,<3.13"
-
-
-dependencies = [
-  "uncertainty-engine[vis,notebook]",
-  "matplotlib",
-  "numpy",
-  "seaborn",
-  "pandas"
-]
-
-[project.urls]
-Homepage = "https://github.com/digiLab-ai/uncertainty-engine-sdk-helper"
+uncertainty-engine = { version = "*", extras = ["vis", "notebook"] }
+matplotlib = "*"
+numpy = "*"
+seaborn = "*"
+pandas = "*"
+python-dotenv = "*"
 
 [tool.poetry.group.dev.dependencies]
 black = "^25.1.0"
@@ -27,14 +29,3 @@ ipykernel = "^6.28.0"
 matplotlib = "^3.8.2"
 pytest = "^8.4.0"
 python-dotenv = "^1.0.1"
-
-[build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
-
-
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
