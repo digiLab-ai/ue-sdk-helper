@@ -27,7 +27,6 @@ def get_file_id(client, filename: str, project_name:str) -> str:
     """
     Get the file ID from the project name.
     """
-    projects = client.projects.list_projects()
     resources = client.resources.list_resources(project_id=get_project_id(client, project_name))
     for resource in resources:
         if resource.name == filename:
