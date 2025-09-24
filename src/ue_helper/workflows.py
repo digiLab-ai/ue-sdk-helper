@@ -96,3 +96,4 @@ def train_and_save_model_workflow(client,
     response = client.run_node(workflow)
     if is_print_full_output:
         pprint(response.model_dump())
+        

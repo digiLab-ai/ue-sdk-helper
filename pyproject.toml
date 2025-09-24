@@ -29,3 +29,11 @@ ipykernel = "^6.28.0"
 matplotlib = "^3.8.2"
 pytest = "^8.4.0"
 python-dotenv = "^1.0.1"
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+select = ["E","F","I","UP","B"]
