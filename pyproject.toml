@@ -18,6 +18,7 @@ python = ">=3.9,<3.13"
 uncertainty-engine = { version = "*", extras = ["vis", "notebook"] }
 matplotlib = "*"
 numpy = "*"
+scipy = "*"
 seaborn = "*"
 pandas = "*"
 python-dotenv = "*"
