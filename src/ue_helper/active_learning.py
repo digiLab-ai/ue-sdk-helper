@@ -1,113 +1,7 @@
-from __future__ import annotations
-import numpy as np
-from pprint import pprint
-from uncertainty_engine.nodes.base import Node
-from uncertainty_engine.graph import Graph
-from uncertainty_engine.nodes.workflow import Workflow
-from .utils import get_presigned_url, get_project_id
-from .active_learning import active_learning_step, active_learning_loop
-
-__all__ = ["get_presigned_url", "get_project_id", "active_learning_step", "active_learning_loop"]
-__version__ = "0.0.1"
-
-
-def train_and_save_model_workflow(client, 
-                   project_name: str,
-                   dataset_name: str, 
-                   input_names: list,
-                   output_names: list,
-                   save_model_name: str,
-                   is_visualise_workflow: bool = False,
-                   is_print_full_output: bool = False) -> dict:
-    """
-    A workflow that trains a machine learning model.
-    Here, we assume all resources have already been uploaded to the cloud.
-    Simplified methods exist for local data.
-    """
-    # Create the graph
-    graph = Graph()
-
-    # Create relevant nodes:
-
-    # Define the model config node
-    model_config = Node(
-        node_name="ModelConfig",
-        label="Model Config",
-    )
-    graph.add_node(model_config)
-    # Add a handle to the the config output
-    output_config = model_config.make_handle("config")
-
-    # Define the load dataset node
-    load_data = Node(
-        node_name="LoadDataset",
-        label="Load Dataset",
-        file_id=get_resource_id(client=client, project_name=project_name, resource_name=dataset_name),
-        project_id=get_project_id(client=client, project_name=project_name),
-    )
-    graph.add_node(load_data)
-    dataset = load_data.make_handle("dataset")
-
-    # Define the input filter dataset node
-    input_data = Node(
-        node_name="FilterDataset",
-        label="Input Dataset",
-        columns=input_names,
-        dataset=dataset,
-    )
-    graph.add_node(input_data)
-    input_dataset = load_data.make_handle("input_dataset")
-
-    # Define the output filter dataset node
-    output_data = Node(
-        node_name="FilterDataset",
-        label="Output Dataset",
-        columns=output_names,
-        dataset=dataset,
-    )
-    graph.add_node(output_data)
-    output_dataset = load_data.make_handle("output_dataset")
-
-
-    # Define the train model node
-    train_model = Node(
-        node_name="TrainModel",
-        label="Train Model",
-        config=output_config,
-        inputs=input_dataset,
-        outputs=output_dataset,
-    )
-    graph.add_node(train_model)
-    # Add a handle to the the config output
-    output_model = train_model.make_handle("model")
-    save = Node(
-        node_name="Save",
-        label="Save",
-        file=output_model,
-        fileid=save_model_name,
-    )
-    graph.add_node(save)
-
-    if is_visualise_workflow:
-        pprint(graph.nodes)
-
-    workflow = Workflow(
-        graph=graph.nodes,
-        inputs=graph.external_input,
-        external_input_id=graph.external_input_id,
-        requested_output={
-            }
-        )
-
-    response = client.run_node(workflow)
-    if is_print_full_output:
-        pprint(response.model_dump())
-        
-
 """
-Simple Active Learning Helper Function
+Active Learning Helper Functions
 
-This module provides a clean, reusable helper function for active learning
+This module provides clean, reusable helper functions for active learning
 extracted from the Branin function optimization workbook.
 """
 
@@ -123,7 +17,7 @@ from uncertainty_engine_types import ResourceID
 from uncertainty_engine.nodes.workflow import Workflow
 
 
-def active_learning_step(client, project_id, xy_data, z_data, acquisition_function="PosteriorStandardDeviation", num_points=1):
+def active_learning_step(client, project_id, inputs, outputs, acquisition_function="PosteriorStandardDeviation", num_points=1):
     """
     Perform one step of active learning using Uncertainty Engine.
     
@@ -136,9 +30,9 @@ def active_learning_step(client, project_id, xy_data, z_data, acquisition_functi
         Authenticated Uncertainty Engine client
     project_id : str
         Project ID where datasets will be uploaded
-    xy_data : list of lists
+    inputs : list of lists
         Input coordinates (e.g., [[x1, y1], [x2, y2], ...])
-    z_data : list of lists
+    outputs : list of lists
         Output values (e.g., [[z1], [z2], ...])
     acquisition_function : str, optional
         Acquisition function to use (default: "PosteriorStandardDeviation")
@@ -150,7 +44,7 @@ def active_learning_step(client, project_id, xy_data, z_data, acquisition_functi
     tuple : (recommended_points_df, model_output, dataset_names)
         - recommended_points_df: DataFrame with recommended points
         - model_output: The trained model output from the workflow
-        - dataset_names: Dictionary with 'xy_name' and 'z_name' keys for cleanup
+        - dataset_names: Dictionary with 'inputs_name' and 'outputs_name' keys for cleanup
     
     Example:
     --------
@@ -159,15 +53,15 @@ def active_learning_step(client, project_id, xy_data, z_data, acquisition_functi
     >>> client.authenticate("your_account_id")
     >>> 
     >>> # Prepare your data
-    >>> xy_data = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]
-    >>> z_data = [[10.5], [15.2], [8.7]]
+    >>> inputs = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]
+    >>> outputs = [[10.5], [15.2], [8.7]]
     >>> 
     >>> # Get recommendations
     >>> recommendations, model, dataset_names = active_learning_step(
     ...     client=client,
     ...     project_id="your_project_id",
-    ...     xy_data=xy_data,
-    ...     z_data=z_data,
+    ...     inputs=inputs,
+    ...     outputs=outputs,
     ...     acquisition_function="PosteriorStandardDeviation",
     ...     num_points=2
     ... )
@@ -180,32 +74,32 @@ def active_learning_step(client, project_id, xy_data, z_data, acquisition_functi
     timestamp = datetime.now().strftime("%d%m%y%H%M%S")
     
     # Create temporary CSV files
-    csv_filename_xy = f"temp_xy_{timestamp}.csv"
-    csv_filename_z = f"temp_z_{timestamp}.csv"
+    csv_filename_inputs = f"temp_inputs_{timestamp}.csv"
+    csv_filename_outputs = f"temp_outputs_{timestamp}.csv"
     
     try:
-        # Save XY data
-        with open(csv_filename_xy, 'w') as f:
-            for x, y in xy_data:
-                f.write(f"{x},{y}\n")
+        # Save inputs data
+        with open(csv_filename_inputs, 'w') as f:
+            for input_point in inputs:
+                f.write(",".join(map(str, input_point)) + "\n")
         
-        # Save Z data
-        with open(csv_filename_z, 'w') as f:
-            for z in z_data:
-                f.write(f"{z[0]}\n")
+        # Save outputs data
+        with open(csv_filename_outputs, 'w') as f:
+            for output_point in outputs:
+                f.write(",".join(map(str, output_point)) + "\n")
         
         # Upload datasets
         client.resources.upload(
             project_id=project_id,
-            name=f"ActiveLearning_xy_{timestamp}",
-            file_path=csv_filename_xy,
+            name=f"ActiveLearning_inputs_{timestamp}",
+            file_path=csv_filename_inputs,
             resource_type="dataset"
         )
         
         client.resources.upload(
             project_id=project_id,
-            name=f"ActiveLearning_z_{timestamp}",
-            file_path=csv_filename_z,
+            name=f"ActiveLearning_outputs_{timestamp}",
+            file_path=csv_filename_outputs,
             resource_type="dataset"
         )
         
@@ -216,27 +110,27 @@ def active_learning_step(client, project_id, xy_data, z_data, acquisition_functi
         # Create workflow graph
         graph = Graph()
         
-        # Load XY coordinates dataset
-        data_loader_xy = Node(
+        # Load inputs dataset
+        data_loader_inputs = Node(
             node_name="Load",
-            label="Load XY Data",
+            label="Load Inputs Data",
             project_id=project_id,
-            file_id=ResourceID(id=resources_dict[f"ActiveLearning_xy_{timestamp}"]).model_dump(),
+            file_id=ResourceID(id=resources_dict[f"ActiveLearning_inputs_{timestamp}"]).model_dump(),
             file_type="dataset",
         )
-        xy_handle = data_loader_xy.make_handle("file")
-        graph.add_node(data_loader_xy)
+        inputs_handle = data_loader_inputs.make_handle("file")
+        graph.add_node(data_loader_inputs)
         
-        # Load Z values dataset
-        data_loader_z = Node(
+        # Load outputs dataset
+        data_loader_outputs = Node(
             node_name="Load",
-            label="Load Z Data",
+            label="Load Outputs Data",
             project_id=project_id,
-            file_id=ResourceID(id=resources_dict[f"ActiveLearning_z_{timestamp}"]).model_dump(),
+            file_id=ResourceID(id=resources_dict[f"ActiveLearning_outputs_{timestamp}"]).model_dump(),
             file_type="dataset",
         )
-        z_handle = data_loader_z.make_handle("file")
-        graph.add_node(data_loader_z)
+        outputs_handle = data_loader_outputs.make_handle("file")
+        graph.add_node(data_loader_outputs)
         
         # Model configuration
         model_config = Node(
@@ -251,8 +145,8 @@ def active_learning_step(client, project_id, xy_data, z_data, acquisition_functi
             node_name="TrainModel",
             label="Train Model",
             config=config_handle,
-            inputs=xy_handle,
-            outputs=z_handle,
+            inputs=inputs_handle,
+            outputs=outputs_handle,
         )
         output_model = train_model.make_handle("model")
         graph.add_node(train_model)
@@ -303,8 +197,8 @@ def active_learning_step(client, project_id, xy_data, z_data, acquisition_functi
         
         # Return dataset names for cleanup
         dataset_names = {
-            'xy_name': f"ActiveLearning_xy_{timestamp}",
-            'z_name': f"ActiveLearning_z_{timestamp}"
+            'inputs_name': f"ActiveLearning_inputs_{timestamp}",
+            'outputs_name': f"ActiveLearning_outputs_{timestamp}"
         }
         
         return recommended_points_df, job_response.outputs["outputs"]["trained_model"], dataset_names
@@ -315,12 +209,12 @@ def active_learning_step(client, project_id, xy_data, z_data, acquisition_functi
     finally:
         # Clean up temporary files
         import os
-        for filename in [csv_filename_xy, csv_filename_z]:
+        for filename in [csv_filename_inputs, csv_filename_outputs]:
             if os.path.exists(filename):
                 os.remove(filename)
 
 
-def active_learning_loop(client, project_id, initial_xy_data, initial_z_data, 
+def active_learning_loop(client, project_id, initial_inputs, initial_outputs, 
                         objective_function, num_iterations=5, 
                         acquisition_function="PosteriorStandardDeviation", 
                         num_points_per_iteration=1):
@@ -333,9 +227,9 @@ def active_learning_loop(client, project_id, initial_xy_data, initial_z_data,
         Authenticated Uncertainty Engine client
     project_id : str
         Project ID where datasets will be uploaded
-    initial_xy_data : list of lists
+    initial_inputs : list of lists
         Initial input coordinates
-    initial_z_data : list of lists
+    initial_outputs : list of lists
         Initial output values
     objective_function : callable
         Function to evaluate new points (takes a list of coordinates, returns a value)
@@ -349,8 +243,8 @@ def active_learning_loop(client, project_id, initial_xy_data, initial_z_data,
     Returns:
     --------
     dict : Results containing:
-        - 'final_xy_data': Final input coordinates
-        - 'final_z_data': Final output values
+        - 'final_inputs': Final input coordinates
+        - 'final_outputs': Final output values
         - 'best_point': Best point found (coordinates, value)
         - 'convergence_history': List of best values over iterations
         - 'all_recommendations': List of all recommended points
@@ -363,8 +257,8 @@ def active_learning_loop(client, project_id, initial_xy_data, initial_z_data,
     >>> results = active_learning_loop(
     ...     client=client,
     ...     project_id="your_project_id",
-    ...     initial_xy_data=[[0.0, 0.0], [1.0, 1.0]],
-    ...     initial_z_data=[[0.0], [2.0]],
+    ...     initial_inputs=[[0.0, 0.0], [1.0, 1.0]],
+    ...     initial_outputs=[[0.0], [2.0]],
     ...     objective_function=my_objective,
     ...     num_iterations=10
     ... )
@@ -373,15 +267,15 @@ def active_learning_loop(client, project_id, initial_xy_data, initial_z_data,
     """
     
     # Initialize current data
-    current_xy_data = initial_xy_data.copy()
-    current_z_data = initial_z_data.copy()
+    current_inputs = initial_inputs.copy()
+    current_outputs = initial_outputs.copy()
     
     # Track results
     convergence_history = []
     all_recommendations = []
     
     print(f"Starting active learning loop with {num_iterations} iterations...")
-    print(f"Initial data points: {len(current_xy_data)}")
+    print(f"Initial data points: {len(current_inputs)}")
     
     for iteration in range(num_iterations):
         print(f"\n--- Iteration {iteration + 1}/{num_iterations} ---")
@@ -394,8 +288,8 @@ def active_learning_loop(client, project_id, initial_xy_data, initial_z_data,
             recommendations_df, model_output, dataset_names = active_learning_step(
                 client=client,
                 project_id=project_id,
-                xy_data=current_xy_data,
-                z_data=current_z_data,
+                inputs=current_inputs,
+                outputs=current_outputs,
                 acquisition_function=acquisition_function,
                 num_points=num_points_per_iteration
             )
@@ -403,33 +297,34 @@ def active_learning_loop(client, project_id, initial_xy_data, initial_z_data,
             # Process recommendations
             if not recommendations_df.empty:
                 for i, row in recommendations_df.iterrows():
-                    # Extract coordinates (assuming first two columns are x, y)
+                    # Extract coordinates (assuming first columns are input coordinates)
                     coords = list(row.values)
                     if len(coords) >= 2:
+                        # For 2D case, assume first two columns are x, y
                         x_new, y_new = coords[0], coords[1]
                         
                         # Evaluate using objective function
-                        z_value = objective_function([x_new, y_new])
+                        output_value = objective_function([x_new, y_new])
                         
                         # Add to current data
-                        current_xy_data.append([x_new, y_new])
-                        current_z_data.append([z_value])
+                        current_inputs.append([x_new, y_new])
+                        current_outputs.append([output_value])
                         
                         # Track recommendation
                         all_recommendations.append({
                             'iteration': iteration + 1,
                             'coordinates': [x_new, y_new],
-                            'value': z_value
+                            'value': output_value
                         })
                         
-                        print(f"  Added point: ({x_new:.4f}, {y_new:.4f}) -> {z_value:.4f}")
+                        print(f"  Added point: ({x_new:.4f}, {y_new:.4f}) -> {output_value:.4f}")
             
             # Update convergence history
-            best_value = min([z[0] for z in current_z_data])
+            best_value = min([output[0] for output in current_outputs])
             convergence_history.append(best_value)
             
             print(f"  Current best value: {best_value:.4f}")
-            print(f"  Total points: {len(current_xy_data)}")
+            print(f"  Total points: {len(current_inputs)}")
             
             # Clean up datasets from this iteration (except for the final iteration)
             if iteration < num_iterations - 1:  # Don't delete on the last iteration
@@ -459,21 +354,20 @@ def active_learning_loop(client, project_id, initial_xy_data, initial_z_data,
             continue
     
     # Find best point
-    best_idx = np.argmin([z[0] for z in current_z_data])
+    best_idx = np.argmin([output[0] for output in current_outputs])
     best_point = {
-        'coordinates': current_xy_data[best_idx],
-        'value': current_z_data[best_idx][0]
+        'coordinates': current_inputs[best_idx],
+        'value': current_outputs[best_idx][0]
     }
     
     print(f"\n=== Active Learning Complete ===")
-    print(f"Total evaluations: {len(current_xy_data)}")
+    print(f"Total evaluations: {len(current_inputs)}")
     print(f"Best point: {best_point['coordinates']} -> {best_point['value']:.6f}")
     
     return {
-        'final_xy_data': current_xy_data,
-        'final_z_data': current_z_data,
+        'final_inputs': current_inputs,
+        'final_outputs': current_outputs,
         'best_point': best_point,
         'convergence_history': convergence_history,
         'all_recommendations': all_recommendations
     }
-
