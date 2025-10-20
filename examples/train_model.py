@@ -12,7 +12,7 @@ load_dotenv()
 client = Client()
 client.authenticate()
 
-PROJECT_NAME = 'Demos'
+PROJECT_NAME = 'Personal'
 MODEL_NAME = 'example'
 
 inputs = {
@@ -21,7 +21,7 @@ inputs = {
 }
 
 outputs = {
-    'y1': [0., 1.]
+    'y0': [0., 1.]
 }
 
 train_dataset = {**inputs, **outputs}
