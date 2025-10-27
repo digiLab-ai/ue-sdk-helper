@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from pprint import pprint
-from typing import Any, Dict, Optional, Union, Iterable, Tuple
+from typing import Any, Dict, Optional, Union, Iterable, Tuple, Literal
 import pandas as pd
 from io import StringIO
 
@@ -454,5 +454,334 @@ def predict_model_workflow(
         except Exception as e:
             # Non-fatal: log warning but don't disrupt the main return path.
             print(f"[WARN] Failed to delete temp dataset '{predict_dataset_name}': {e}")
+
+    return predictions_df, uncertainty_df
+
+
+def get_model_recommended_points_workflow(
+    client: Client,
+    project_name: str,
+    model_name: str,
+    number_of_points: int,
+    acquisition_function: Literal[
+        "PosteriorStandardDeviation",
+        "MonteCarloNegativeIntegratedPosteriorVariance",
+    ] = "MonteCarloNegativeIntegratedPosteriorVariance",
+    is_visualise_workflow: bool = False,
+    is_print_full_output: bool = False,
+    save_workflow_name: Union[str, None] = None,
+) -> pd.DataFrame:
+    """
+    Build and execute a workflow that *loads a saved model* and asks it to
+    recommend a set of new evaluation points using a chosen acquisition function.
+
+    This creates a minimal graph with:
+      - LoadModel  →  Recommend  →  Download
+
+    Parameters
+    ----------
+    client : Client
+        Authenticated Uncertainty Engine client.
+    project_name : str
+        Name of the project that contains the saved model.
+    model_name : str
+        Name of the saved model resource to load for recommendation.
+    number_of_points : int
+        How many candidate points the acquisition should return.
+    acquisition_function : {"PosteriorStandardDeviation",
+                            "MonteCarloNegativeIntegratedPosteriorVariance"}, optional
+        Which acquisition strategy to use. Defaults to
+        "MonteCarloNegativeIntegratedPosteriorVariance" (MC-NIPV), which seeks
+        points that most reduce the integrated posterior variance.
+        Brief notes:
+          - ExpectedImprovement / LogExpectedImprovement: classic improvement-seeking
+            exploitation/exploration balance (log variant for numerically wide ranges).
+          - PosteriorMean: greedily picks high mean predictions (pure exploitation).
+          - PosteriorStandardDeviation: targets high uncertainty (pure exploration).
+          - MonteCarloExpectedImprovement / MonteCarloLogExpectedImprovement:
+            MC estimators of EI / log-EI for non-Gaussian or complex posteriors.
+          - MonteCarloNegativeIntegratedPosteriorVariance:
+            MC estimator that minimizes global uncertainty (space-filling / UQ-oriented).
+    is_visualise_workflow : bool, default False
+        If True, pretty-print the constructed graph nodes for debugging.
+    is_print_full_output : bool, default False
+        If True, pretty-print the full response payload from workflow execution.
+    save_workflow_name : str or None, default None
+        If provided, saves the built workflow under this name in the project.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A DataFrame of recommended points downloaded from the "Recommend" node
+        (typically one row per suggested point; columns depend on the model's
+        input schema and engine output).
+
+    Raises
+    ------
+    RuntimeError
+        Propagated from the underlying client if workflow execution fails.
+    ValueError
+        May be raised upstream if the provided acquisition name is not supported
+        by the engine (this function passes it through as-is).
+
+    Notes
+    -----
+    - Requires the engine operators: "LoadModel", "Recommend", and "Download".
+    - The acquisition function string is forwarded directly to the engine.
+      Use one of the listed values above to avoid runtime errors.
+
+    Examples
+    --------
+    >>> df = get_model_recommended_points_workflow(
+    ...     client=ue_client,
+    ...     project_name="Personal",
+    ...     model_name="gp_emulator",
+    ...     number_of_points=5,
+    ...     acquisition_function="MonteCarloExpectedImprovement",
+    ... )
+    >>> df.head()
+    """
+
+    # 1) Build graph.
+    graph = Graph()
+
+    # 2a) Load the trained model.
+    load_model = Node(
+        node_name="LoadModel",
+        label="Load Model",
+        file_id=wrap_resource_id(
+            get_resource_id(
+                client=client,
+                project_name=project_name,
+                resource_name=model_name,
+                resource_type="model",
+            )
+        ),
+        project_id=get_project_id(client=client, project_name=project_name),
+    )
+    graph.add_node(load_model)
+
+    # 2d) Predict with uncertainty.
+    recommend_model = Node(
+        node_name="Recommend",
+        label="Recommend",
+        model=load_model.make_handle("file"),
+        acquisition_function=acquisition_function,
+        number_of_points=number_of_points,
+    )
+    graph.add_node(recommend_model)
+
+    # 2e) Download artifacts (predictions + uncertainty as CSVs).
+    download_recommended_points = Node(
+        node_name="Download",
+        label="Recommended points",
+        file=recommend_model.make_handle("recommended_points"),
+    )
+    graph.add_node(download_recommended_points)
+
+    if is_visualise_workflow:
+        pprint(graph.nodes)
+
+    # Finalize workflow payload (explicitly request both artifacts).
+    workflow = Workflow(
+        graph=graph.nodes,
+        inputs=graph.external_input,
+        external_input_id=graph.external_input_id,
+        requested_output={
+            "Recommended Points": download_recommended_points.make_handle("file").model_dump(),
+        },
+    )
+
+    # Optionally persist the workflow definition.
+    if save_workflow_name is not None:
+        client.workflows.save(
+            project_id=get_project_id(client=client, project_name=project_name),
+            workflow=workflow,
+            workflow_name=save_workflow_name,
+        )
+
+    # Execute inference.
+    response = client.run_node(workflow)
+    if is_print_full_output:
+        pprint(response.model_dump())
+
+    # Fetch artifacts via presigned URLs and load to DataFrames.
+    recommended_points_response = get_presigned_url(response.outputs["outputs"]["Recommended Points"])
+    recommended_points_response = pd.read_csv(StringIO(recommended_points_response.text))
+
+    return recommended_points_response
+
+def get_model_maximum_workflow(
+    client: Client,
+    project_name: str,
+    model_name: str,
+    number_of_points: int = 1,
+    acquisition_function: Literal[
+        "ExpectedImprovement",
+        "LogExpectedImprovement",
+        "PosteriorMean",
+        "MonteCarloExpectedImprovement",
+        "MonteCarloLogExpectedImprovement",
+    ] = "PosteriorMean",
+    is_visualise_workflow: bool = False,
+    is_print_full_output: bool = False,
+    save_workflow_name: Union[str, None] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Build and execute a workflow that loads a saved model, proposes up to
+    `number_of_points` locations that *maximize the objective* according to the
+    chosen acquisition function, and then evaluates the model at those points to
+    return predictions and uncertainties.
+
+    The constructed workflow is:
+        1) LoadModel
+        2) Recommend(acquisition_function, number_of_points)
+        3) PredictModel(dataset = recommended_points, model = loaded model)
+        4) Download(prediction), Download(uncertainty)
+
+    Parameters
+    ----------
+    client : Client
+        Uncertainty Engine client instance (already authenticated).
+    project_name : str
+        Name of the project containing the saved model.
+    model_name : str
+        Name of the saved model resource to load for recommendation and prediction.
+    number_of_points : int, default 1
+        How many candidate maximizers to propose.
+    acquisition_function : {"ExpectedImprovement", "LogExpectedImprovement",
+                            "PosteriorMean",
+                            "MonteCarloExpectedImprovement", "MonteCarloLogExpectedImprovement"},
+        default "PosteriorMean"
+        Acquisition used to propose maximizers:
+        - **ExpectedImprovement (EI):** Classic improvement over current best (greedy-exploit with exploration).
+        - **LogExpectedImprovement:** Log-space EI, numerically stabler for tiny improvements.
+        - **PosteriorMean:** Greedy exploitation of the model mean (argmax of mean).
+        - **MonteCarloExpectedImprovement (MC-EI):** EI estimated via posterior MC samples (better for batches/multi-modality).
+        - **MonteCarloLogExpectedImprovement (MC-log-EI):** Log-space MC EI for numerical stability.
+
+    is_visualise_workflow : bool, default False
+        If True, pretty-print the constructed graph nodes for debugging.
+    is_print_full_output : bool, default False
+        If True, pretty-print the full response payload from workflow execution.
+    save_workflow_name : str or None, default None
+        If provided, saves the workflow definition under this name in the project.
+
+    Returns
+    -------
+    (pandas.DataFrame, pandas.DataFrame)
+        Tuple of `(predictions_df, uncertainty_df)` evaluated at the recommended points.
+        Columns reflect the model outputs and their associated uncertainties.
+
+    Raises
+    ------
+    ValueError
+        If `acquisition_function` is not one of the supported options.
+    RuntimeError
+        Propagated from the underlying client if workflow execution fails.
+
+    Notes
+    -----
+    - This routine targets **maximization**. For minimization, maximize the negative
+      of the objective (or use an equivalent acquisition configured for minimization).
+    - Assumes availability of "LoadModel", "Recommend", "PredictModel", and "Download" nodes.
+
+    Examples
+    --------
+    >>> preds_df, uncert_df = get_model_maximum_workflow(
+    ...     client=ue_client,
+    ...     project_name="Personal",
+    ...     model_name="gp_emulator",
+    ...     number_of_points=5,
+    ...     acquisition_function="ExpectedImprovement",
+    ... )
+    >>> preds_df.head(), uncert_df.head()
+    """
+    # 1) Build graph.
+    graph = Graph()
+
+    # 2a) Load the trained model.
+    load_model = Node(
+        node_name="LoadModel",
+        label="Load Model",
+        file_id=wrap_resource_id(
+            get_resource_id(
+                client=client,
+                project_name=project_name,
+                resource_name=model_name,
+                resource_type="model",
+            )
+        ),
+        project_id=get_project_id(client=client, project_name=project_name),
+    )
+    graph.add_node(load_model)
+
+    # 2d) Predict with uncertainty.
+    recommend_model = Node(
+        node_name="Recommend",
+        label="Recommend",
+        model=load_model.make_handle("file"),
+        acquisition_function=acquisition_function,
+        number_of_points=number_of_points,
+    )
+    graph.add_node(recommend_model)
+
+    # 2d) Predict with uncertainty.
+    predict_model = Node(
+        node_name="PredictModel",
+        label="Predict Model",
+        dataset=recommend_model.make_handle("recommended_points"),
+        model=load_model.make_handle("file"),
+    )
+    graph.add_node(predict_model)
+
+    # 2e) Download artifacts (predictions + uncertainty as CSVs).
+    download_predict = Node(
+        node_name="Download",
+        label="Download Prediction",
+        file=predict_model.make_handle("prediction"),
+    )
+    graph.add_node(download_predict)
+
+    download_uncertainty = Node(
+        node_name="Download",
+        label="Download Uncertainty",
+        file=predict_model.make_handle("uncertainty"),
+    )
+    graph.add_node(download_uncertainty)
+
+    if is_visualise_workflow:
+        pprint(graph.nodes)
+
+    # Finalize workflow payload (explicitly request both artifacts).
+    workflow = Workflow(
+        graph=graph.nodes,
+        inputs=graph.external_input,
+        external_input_id=graph.external_input_id,
+        requested_output={
+            "Predictions": download_predict.make_handle("file").model_dump(),
+            "Uncertainty": download_uncertainty.make_handle("file").model_dump(),
+        },
+    )
+
+    # Optionally persist the workflow definition.
+    if save_workflow_name is not None:
+        client.workflows.save(
+            project_id=get_project_id(client=client, project_name=project_name),
+            workflow=workflow,
+            workflow_name=save_workflow_name,
+        )
+
+    # Execute inference.
+    response = client.run_node(workflow)
+    if is_print_full_output:
+        pprint(response.model_dump())
+
+    # Fetch artifacts via presigned URLs and load to DataFrames.
+    predictions_response = get_presigned_url(response.outputs["outputs"]["Predictions"])
+    predictions_df = pd.read_csv(StringIO(predictions_response.text))
+
+    uncertainty_response = get_presigned_url(response.outputs["outputs"]["Uncertainty"])
+    uncertainty_df = pd.read_csv(StringIO(uncertainty_response.text))
 
     return predictions_df, uncertainty_df
